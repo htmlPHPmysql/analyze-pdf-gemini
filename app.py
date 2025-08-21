@@ -10,27 +10,32 @@ from langchain_core.prompts import PromptTemplate
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
 
-# Added asyncio to manage the event loop
 import asyncio
 
-# A dictionary to store a cache for the event loop
-loop = None
+# A list of available models for the user to select
+AVAILABLE_MODELS = [    
+    "gemini-2.5-flash-lite",
+    "gemma-3n-e2b-it",
+    "gemma-3n-e4b-it",
+    "gemma-3-27b-it",
+    "gemma-3-12b-it",
+    "gemma-3-4b-it",
+    "gemma-3-1b-it",
+    "learnlm-2.0-flash-experimental",
+    "gemini-2.5-pro-preview-tts",
+    "gemini-2.5-flash-preview-tts",
+    "gemini-2.0-flash-thinking-exp-1219",
+    "gemini-2.0-flash-thinking-exp",
+    "gemini-2.0-flash-thinking-exp-01-21",
+    "gemini-exp-1206",
+    "gemini-2.0-pro-exp-02-05",
+    "gemini-2.0-pro-exp",
+    "gemini-2.0-flash-lite-preview"
+]
 
 def get_pdf_text(pdf_documents):
     """
     Extracts and concatenates text from a list of PDF documents.
-
-    This function iterates through a list of PDF file-like objects, opens each
-    one using pdfplumber, and extracts the text from every page. The text from
-    all documents is then combined into a single string.
-
-    Args:
-        pdf_documents (list): A list of file-like objects representing the
-                              uploaded PDF documents.
-
-    Returns:
-        str: A single string containing all the extracted text from the
-             documents. Returns an empty string if no text is found.
     """
     text = ""
     for pdf in pdf_documents:
@@ -42,17 +47,6 @@ def get_pdf_text(pdf_documents):
 def get_text_chunks(text):
     """
     Splits a long string of text into smaller, overlapping chunks.
-
-    The text is split using a character-based splitter. This is a common
-    preprocessing step for large language models to ensure that the context
-    can be managed effectively within a model's token limit.
-
-    Args:
-        text (str): The raw text to be split into chunks.
-
-    Returns:
-        list: A list of strings, where each string is a chunk of the original
-              text.
     """
     text_splitter = CharacterTextSplitter(
         separator="\n",
@@ -66,32 +60,13 @@ def get_text_chunks(text):
 def get_vectorstore(text_chunks):
     """
     Creates a FAISS vector database from text chunks using Gemini embeddings.
-
-    This function converts text chunks into numerical vectors using Google's
-    `embedding-001` model and stores them in a FAISS index, which is optimized
-    for similarity search. This allows for fast retrieval of relevant
-    information.
-
-    Args:
-        text_chunks (list): A list of text strings (chunks) to be embedded
-                            and stored.
-
-    Returns:
-        FAISS.vectorstore.FAISS: A FAISS vector store object, or None if
-                                 an error occurs during creation.
-
-    Raises:
-        Exception: Catches and handles any exceptions that occur during the
-                   vector store creation process, displaying an error message
-                   to the user.
     """
     try:
-        # Create a new event loop and run the embedding operation
-        # This is a workaround to the 'no current event loop' error
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         
         async def create_vectorstore_async():
+            # Use a supported embedding model
             embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
             vectorstore = FAISS.from_texts(
                 texts=text_chunks,
@@ -106,34 +81,16 @@ def get_vectorstore(text_chunks):
         st.error(f"Error creating the vector database: {e}")
         return None
     finally:
-        # It's good practice to close the loop once done
         if loop and not loop.is_running():
             loop.close()
 
-def get_conversation_chain(vectorstore):
+def get_conversation_chain(vectorstore, model_name):
     """
     Initializes and returns a conversational chain for the chat assistant.
-
-    This chain uses a Retrieval-Augmented Generation (RAG) approach. It
-    configures a `gemini-pro` language model, a retriever to fetch relevant
-    documents from the vector store, and a prompt template to guide the model's
-    response generation based on the retrieved context and chat history.
-
-    Args:
-        vectorstore (FAISS.vectorstore.FAISS): The vector store containing
-                                               the document embeddings.
-
-    Returns:
-        langchain_core.runnables.Runnable: A runnable conversation chain, or
-                                           None if an error occurs.
-
-    Raises:
-        Exception: Catches and handles any exceptions that occur during the
-                   chain creation process, displaying an error message to
-                   the user.
     """
     try:
-        llm = ChatGoogleGenerativeAI(model="gemini-flash")
+        # Use the model selected by the user
+        llm = ChatGoogleGenerativeAI(model=model_name)
         memory = ConversationBufferMemory(
             memory_key="chat_history",
             return_messages=True,
@@ -180,22 +137,6 @@ def get_conversation_chain(vectorstore):
 def handle_userinput(user_question):
     """
     Processes a user's question and updates the chat history with the response.
-
-    This function checks for the existence of the conversation chain and then
-    invokes it with the user's question. It saves the context to memory and
-    appends both the user's question and the AI's response to the chat history,
-    which is then displayed in the Streamlit interface.
-
-    Args:
-        user_question (str): The question submitted by the user.
-
-    Returns:
-        None: The function updates the Streamlit session state and chat
-              interface directly.
-
-    Raises:
-        Exception: Catches and handles any exceptions during the invocation
-                   or history update, displaying an error message to the user.
     """
     if "conversation" not in st.session_state or not st.session_state.conversation:
         st.error("Please process your documents first.")
@@ -213,16 +154,15 @@ def handle_userinput(user_question):
             with st.chat_message(message["role"]):
                 st.markdown(message["content"])
     except Exception as e:
-        st.error(f"Error while processing the request: {e}")
+        # Check for specific rate-limit errors
+        if "429" in str(e):
+            st.error(f"Quota exceeded for the selected model. Please try again in a minute or select a different model.")
+        else:
+            st.error(f"Error while processing the request: {e}")
 
 def main():
     """
     The main function that runs the Streamlit application.
-
-    This function sets up the Streamlit page configuration, initializes the
-    session state variables, and defines the user interface layout, including
-    the chat input and the sidebar for document uploading and processing. It
-    orchestrates the entire application flow based on user interactions.
     """
     load_dotenv()
     st.set_page_config(page_title="Ask question about your PDFs")
@@ -234,8 +174,8 @@ def main():
     if "memory" not in st.session_state:
         st.session_state.memory = None
 
-    st.header("PDF Document Assistant")
-    user_question = st.chat_input("Ask question about your PDF...")
+    st.header("Documents AI Assistant")
+    user_question = st.chat_input("Ask question about your file...")
     if user_question:
         handle_userinput(user_question)
 
@@ -244,6 +184,14 @@ def main():
         pdf_documents = st.file_uploader(
             "Upload your documents and click on 'Process'", accept_multiple_files=True
         )
+        
+        # User can select the model from a dropdown
+        selected_model = st.selectbox(
+            "Select AI Model:",
+            options=AVAILABLE_MODELS,
+            key="selected_model"
+        )
+
         if st.button("Process"):
             if not pdf_documents:
                 st.error("Upload at least one doc")
@@ -261,7 +209,8 @@ def main():
                 if vectorstore is None:
                     return
 
-                st.session_state.conversation = get_conversation_chain(vectorstore)
+                # Pass the selected model to the conversation chain function
+                st.session_state.conversation = get_conversation_chain(vectorstore, selected_model)
                 if st.session_state.conversation is None:
                     return
 
